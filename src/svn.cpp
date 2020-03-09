@@ -441,11 +441,14 @@ public:
                 apr_hash_t *changes, apr_pool_t *pool);
     int addGitIgnore(apr_pool_t *pool, const char *key, QString path,
                      svn_fs_root_t *fs_root, Repository::Transaction *txn, const char *content = NULL);
+    int addSvnExternals(apr_pool_t *pool, const char *key, QString path,
+                     svn_fs_root_t *fs_root, Repository::Transaction *txn, const char *content = NULL);
     int checkParentNotEmpty(apr_pool_t *pool, const char *key, QString path,
                             svn_fs_root_t *fs_root, Repository::Transaction *txn);
     int addGitIgnoreOnBranch(apr_pool_t *pool, QString key, QString path,
                              svn_fs_root_t *fs_root, Repository::Transaction *txn);
     int fetchIgnoreProps(QString *ignore, apr_pool_t *pool, const char *key, svn_fs_root_t *fs_root);
+    int fetchExternalsProps(QString *externals, apr_pool_t *pool, const char *key, svn_fs_root_t *fs_root);
     int fetchUnknownProps(apr_pool_t *pool, const char *key, svn_fs_root_t *fs_root);
 private:
     void splitPathName(const Rules::Match &rule, const QString &pathName, QString *svnprefix_p,
@@ -646,9 +649,9 @@ int SvnRevision::exportEntry(const char *key, const svn_fs_path_change2_t *chang
         needCommit = true;
         //qDebug() << "Adding directory:" << key;
     }
-    // svn:ignore-properties
+    // svn:ignore and svn:externals properties
     else if (is_dir && (change->change_kind == svn_fs_path_change_add || change->change_kind == svn_fs_path_change_modify || change->change_kind == svn_fs_path_change_replace)
-             && path_from == NULL && CommandLineParser::instance()->contains("svn-ignore")) {
+             && path_from == NULL && (CommandLineParser::instance()->contains("svn-ignore") || CommandLineParser::instance()->contains("svn-externals"))) {
         needCommit = true;
     }
     else if (is_dir) {
@@ -940,15 +943,25 @@ int SvnRevision::exportInternal(const char *key, const svn_fs_path_change2_t *ch
 
         // Add GitIgnore with svn:ignore
         int ignoreSet = false;
-        if (((path_from == NULL && change->prop_mod==1) || (path_from != NULL && (change->change_kind == svn_fs_path_change_add || change->change_kind == svn_fs_path_change_replace)))
-            && CommandLineParser::instance()->contains("svn-ignore")) {
-            QString svnignore;
-            // TODO: Check if svn:ignore or other property was changed, but always set on copy/rename (path_from != NULL)
-            if (fetchIgnoreProps(&svnignore, pool, key, fs_root) != EXIT_SUCCESS) {
-                qWarning() << "Error fetching svn-properties (" << key << ")";
-            } else if (!svnignore.isNull()) {
-                addGitIgnore(pool, key, path, fs_root, txn, svnignore.toStdString().c_str());
-                ignoreSet = true;
+        if ((path_from == NULL && change->prop_mod==1) || (path_from != NULL && (change->change_kind == svn_fs_path_change_add || change->change_kind == svn_fs_path_change_replace))) {
+            if (CommandLineParser::instance()->contains("svn-ignore")) {
+                QString svnignore;
+                // TODO: Check if svn:ignore or other property was changed, but always set on copy/rename (path_from != NULL)
+                if (fetchIgnoreProps(&svnignore, pool, key, fs_root) != EXIT_SUCCESS) {
+                    qWarning() << "Error fetching svn-properties (" << key << ")";
+                } else if (!svnignore.isNull()) {
+                    addGitIgnore(pool, key, path, fs_root, txn, svnignore.toStdString().c_str());
+                    ignoreSet = true;
+                }
+            }
+            if (CommandLineParser::instance()->contains("svn-externals")) {
+                QString svnexternals;
+                // TODO: Check if svn:externals or other property was changed, but always set on copy/rename (path_from != NULL)
+                if (fetchExternalsProps(&svnexternals, pool, key, fs_root) != EXIT_SUCCESS) {
+                    qWarning() << "Error fetching svn-properties (" << key << ")";
+                } else if (!svnexternals.isNull()) {
+                    addSvnExternals(pool, key, path, fs_root, txn, svnexternals.toStdString().c_str());
+                }
             }
         }
 
@@ -1080,6 +1093,27 @@ int SvnRevision::addGitIgnore(apr_pool_t *pool, const char *key, QString path,
     return EXIT_SUCCESS;
 }
 
+int SvnRevision::addSvnExternals(apr_pool_t *pool, const char *key, QString path,
+                                 svn_fs_root_t *fs_root, Repository::Transaction *txn, const char *content)
+{
+    // Add gitexternals-File
+    QString gitExternalsPath = path + ".svnexternals";
+    if (content) {
+        QIODevice *io = txn->addFile(gitExternalsPath, 33188, strlen(content));
+        if (!CommandLineParser::instance()->contains("dry-run")) {
+            io->write(content);
+            io->putChar('\n');
+        }
+    } else {
+        QIODevice *io = txn->addFile(gitExternalsPath, 33188, 0);
+        if (!CommandLineParser::instance()->contains("dry-run")) {
+            io->putChar('\n');
+        }
+    }
+
+    return EXIT_SUCCESS;
+}
+
 int SvnRevision::checkParentNotEmpty(apr_pool_t *pool, const char *key, QString path,
                                      svn_fs_root_t *fs_root, Repository::Transaction *txn)
 {
@@ -1181,6 +1215,20 @@ int SvnRevision::fetchIgnoreProps(QString *ignore, apr_pool_t *pool, const char 
 
     // replace multiple asterisks Subversion meaning by Git meaning
     ignore->replace(QRegExp("\\*+"), "*");
+
+    return EXIT_SUCCESS;
+}
+
+int SvnRevision::fetchExternalsProps(QString *externals, apr_pool_t *pool, const char *key, svn_fs_root_t *fs_root)
+{
+    // Get svn:externals
+    svn_string_t *prop = NULL;
+    SVN_ERR(svn_fs_node_prop(&prop, fs_root, key, "svn:externals", pool));
+    if (prop) {
+        *externals = QString(prop->data);
+    } else {
+        *externals = QString();
+    }
 
     return EXIT_SUCCESS;
 }
