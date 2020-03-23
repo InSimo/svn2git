@@ -56,6 +56,7 @@ public:
         int revnum;
 
         QVector<int> merges;
+        QStringList mergeBranches;
 
         QStringList deletedFiles;
         QByteArray modifiedFiles;
@@ -985,11 +986,20 @@ void FastImportRepository::Transaction::noteCopyFromBranch(const QString &branch
     } else {
         qWarning() << "WARN: repository " + repository->name + " branch " + branch + " has some files copied from " + branchFrom + "@" + QByteArray::number(branchRevNum);
 
-        if (!merges.contains(mark)) {
-            merges.append(mark);
-            qDebug() << "adding" << branchFrom + "@" + QByteArray::number(branchRevNum) << ":" << mark << "as a merge point";
-        } else {
+        if (merges.contains(mark)) {
             qDebug() << "merge point already recorded";
+        } else if (mergeBranches.contains(branchFrom)) {
+            int index = mergeBranches.indexOf(branchFrom);
+            if (mark <= merges[index]) {
+                qDebug() << "ignoring" << branchFrom + "@" + QByteArray::number(branchRevNum) << " as a more recent revision is already marked as merged.";
+            } else {
+                qDebug() << "updating" << branchFrom + "@" + QByteArray::number(branchRevNum) << ":" << mark << " as a merge point replacing an earlier revision of the same branch";
+                merges[index] = mark;
+            }
+        } else {
+            merges.append(mark);
+            mergeBranches.append(branchFrom);
+            qDebug() << "adding" << branchFrom + "@" + QByteArray::number(branchRevNum) << ":" << mark << " as a merge point";
         }
     }
 }
